@@ -21,4 +21,9 @@ Gem::Specification.new do |gem|
   gem.add_dependency "redis"
   gem.add_dependency "java_to_base64"
   gem.add_dependency "mondrian-olap"
+
+  gem.add_development_dependency "bundler"
+  gem.add_development_dependency "mocha"
+  gem.add_development_dependency "pry"
+  gem.add_development_dependency "rake"
 end
