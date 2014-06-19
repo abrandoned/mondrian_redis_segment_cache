@@ -8,9 +8,10 @@ Gem::Specification.new do |gem|
   gem.version       = MondrianRedisSegmentCache::VERSION
   gem.authors       = ["Brandon Dewitt"]
   gem.email         = ["brandonsdewitt@gmail.com"]
-  gem.description   = %q{TODO: Write a gem description}
-  gem.summary       = %q{TODO: Write a gem summary}
+  gem.description   = %q{Segment Cache for Mondrian written in JRuby with Redis as the cache store}
+  gem.summary       = %q{Segment Cache for Mondrian written in JRuby with Redis as the cache store}
   gem.homepage      = ""
+  gem.platform      = "java"
 
   gem.files         = `git ls-files`.split($/)
   gem.executables   = gem.files.grep(%r{^bin/}).map{ |f| File.basename(f) }
