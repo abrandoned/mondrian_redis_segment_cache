@@ -146,7 +146,16 @@ module MondrianRedisSegmentCache
     # Private Instance Methods
     #
     def client_options
-      mondrian_redis.client.options
+      # Redis 3.0.4 does not have options where 3.1 does
+      unless mondrian_redis.client.respond_to?(:options)
+        class << mondrian_redis.client
+          def options
+            @options
+          end
+        end
+      end
+
+      return mondrian_redis.client.options
     end
 
     def register_for_redis_events
