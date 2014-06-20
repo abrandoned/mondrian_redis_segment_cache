@@ -36,15 +36,15 @@ Or install it yourself as:
 If using Rails you can put the configuration in an initializer
 
 ```ruby
-  require 'redis'
-  require 'mondrian_redis_segment_cache'
+require 'redis'
+require 'mondrian_redis_segment_cache'
 
-  # Setup a Redis connection
-  MONDRIAN_REDIS_CONNECTION = Redis.new(:url => "redis://localhost:1234/2")
-  MONDRIAN_SEGMENT_CACHE = ::MondrianRedisSegmentCache::Cache.new(MONDRIAN_REDIS_CONNECTION)
+# Setup a Redis connection
+MONDRIAN_REDIS_CONNECTION = Redis.new(:url => "redis://localhost:1234/2")
+MONDRIAN_SEGMENT_CACHE = ::MondrianRedisSegmentCache::Cache.new(MONDRIAN_REDIS_CONNECTION)
 
-  # Register the segment cache with the Mondrian Injector
-  ::Java::MondrianSpi::SegmentCache::SegmentCacheInjector::add_cache(MONDRIAN_SEGMENT_CACHE)
+# Register the segment cache with the Mondrian Injector
+::Java::MondrianSpi::SegmentCache::SegmentCacheInjector::add_cache(MONDRIAN_SEGMENT_CACHE)
 ```
 
 In Redis we use the notifications api, so you must turn it on!
