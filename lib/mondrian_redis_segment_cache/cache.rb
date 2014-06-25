@@ -6,20 +6,22 @@ module MondrianRedisSegmentCache
   class Cache
     include Java::MondrianSpi::SegmentCache
 
-    attr_reader :mondrian_redis, :listeners, :created_listener_connection, :deleted_listener_connection
+    attr_reader :created_listener_connection, :deleted_listener_connection, :listeners, :mondrian_redis, :options
 
     SEGMENT_HEADERS_SET_KEY = "MONDRIAN_SEGMENT_HEADERS_SET"
 
     ##
     # Constructor
     #
-    def initialize(mondrian_redis_connection)
+    def initialize(mondrian_redis_connection, new_options = {})
       @mondrian_redis = mondrian_redis_connection
       @created_listener_connection = ::Redis.new(client_options)
       @deleted_listener_connection = ::Redis.new(client_options)
+      @options = Marshal.load(Marshal.dump(new_options))
 
       reset_listeners
       register_for_redis_events
+      reconcile_set_and_keys
     end
 
     ##
@@ -27,6 +29,7 @@ module MondrianRedisSegmentCache
     #
     def addListener(segment_cache_listener)
       listeners << segment_cache_listener
+      eager_load_listener(segment_cache_listener)
     end
 
     # returns boolean
@@ -48,6 +51,13 @@ module MondrianRedisSegmentCache
 
     def deleted_event_key
       @created_event_key ||= "__keyevent@#{client_options[:db]}__:del"
+    end
+
+    def eager_load_listener(listener)
+      segment_headers_base64 = mondrian_redis.smembers(SEGMENT_HEADERS_SET_KEY)
+      segment_headers_base64.each do |segment_header_base64|
+        publish_created_to_listener(segment_header_base64, listener)
+      end
     end
 
     # returns mondrian.spi.SegmentBody
@@ -79,25 +89,38 @@ module MondrianRedisSegmentCache
       return segment_headers
     end
 
-    def publish_created_to_listeners(message)
+    def publish_created_to_listener(message, listener)
       segment_header = segment_header_from_base64(message)
 
       if segment_header
-        listeners.each do |listener|
-          created_event = ::MondrianRedisSegmentCache::CreatedEvent.new(segment_header)
-          listener.handle(created_event)
-        end
+        created_event = ::MondrianRedisSegmentCache::CreatedEvent.new(segment_header)
+        listener.handle(created_event)
+      end
+    end
+
+    def publish_created_to_listeners(message)
+      listeners.each do |listener|
+        publish_created_to_listener(message, listener)
+      end
+    end
+
+    def publish_deleted_to_listener(message, listener)
+      segment_header = segment_header_from_base64(message)
+
+      if segment_header
+        deleted_event = ::MondrianRedisSegmentCache::DeletedEvent.new(segment_header)
+        listener.handle(deleted_event)
       end
     end
 
     def publish_deleted_to_listeners(message)
-      segment_header = segment_header_from_base64(message)
+      listeners.each do |listener|
+        publish_deleted_to_listener(message, listener)
+      end
 
-      if segment_header
-        listeners.each do |listener|
-          deleted_event = ::MondrianRedisSegmentCache::DeletedEvent.new(segment_header)
-          listener.handle(deleted_event)
-        end
+      # Each server can tell the Set to remove the key as it may be expired
+      if mondrian_redis.sismember(SEGMENT_HEADERS_SET_KEY, message)
+        mondrian_redis.srem(SEGMENT_HEADERS_SET_KEY, message)
       end
     end
 
@@ -106,9 +129,14 @@ module MondrianRedisSegmentCache
       header_base64 = segment_header_to_base64(segment_header)
       body_base64 = segment_body_to_base64(segment_body)
       mondrian_redis.sadd(SEGMENT_HEADERS_SET_KEY, header_base64)
-      set_success = mondrian_redis.set(header_base64, body_base64)
+      
+      if options[:ttl]
+        set_success = mondrian_redis.set(header_base64, body_base64, :ex => options[:ttl])
+      else
+        set_success = mondrian_redis.set(header_base64, body_base64)
+      end
 
-      return (set_success == "OK" || set_success == true) # weird polymorphic return ?
+      return ("#{set_success}".upcase == "OK" || set_success == true) # weird polymorphic return ?
     end
 
     def remove(segment_header)
@@ -133,13 +161,15 @@ module MondrianRedisSegmentCache
     end
 
     def tearDown()
-      # Remove all of the headers and the set that controls them
-      segment_headers_base64 = mondrian_redis.smembers(SEGMENT_HEADERS_SET_KEY)
-      segment_headers_base64.each do |segment_header_base64|
-        mondrian_redis.del(segment_header_base64)
-      end
+      if options[:delete_all_on_tear_down]
+        # Remove all of the headers and the set that controls them
+        segment_headers_base64 = mondrian_redis.smembers(SEGMENT_HEADERS_SET_KEY)
+        segment_headers_base64.each do |segment_header_base64|
+          mondrian_redis.del(segment_header_base64)
+        end
 
-      mondrian_redis.del(SEGMENT_HEADERS_SET_KEY)
+        mondrian_redis.del(SEGMENT_HEADERS_SET_KEY)
+      end
     end
 
     private
@@ -158,6 +188,17 @@ module MondrianRedisSegmentCache
       end
 
       return mondrian_redis.client.options
+    end
+
+    def reconcile_set_and_keys
+      segment_headers_base64 = mondrian_redis.smembers(SEGMENT_HEADERS_SET_KEY)
+
+      segment_headers_base64.each do |segment_header_base64|
+        # Spin through Header Set and remove any keys that are not in redis at all (they may have been deleted while offline)
+        unless mondrian_redis.exists(header_base64)
+          mondrian_redis.srem(SEGMENT_HEADERS_SET_KEY, message)
+        end
+      end
     end
 
     def register_for_redis_events
