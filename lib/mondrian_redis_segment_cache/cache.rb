@@ -1,4 +1,6 @@
 require 'redis'
+require 'mondrian_redis_segment_cache/created_event'
+require 'mondrian_redis_segment_cache/deleted_event'
 
 module MondrianRedisSegmentCache
   class Cache
@@ -82,7 +84,7 @@ module MondrianRedisSegmentCache
 
       if segment_header
         listeners.each do |listener|
-          created_event = MondrianRedisCacheCreatedEvent.new(segment_header)
+          created_event = ::MondrianRedisSegmentCache::CreatedEvent.new(segment_header)
           listener.handle(created_event)
         end
       end
@@ -93,8 +95,8 @@ module MondrianRedisSegmentCache
 
       if segment_header
         listeners.each do |listener|
-          deleted_event = MondrianRedisCacheDeletedEvent.new(segment_header)
-          listener.handle(deleted_evet)
+          deleted_event = ::MondrianRedisSegmentCache::DeletedEvent.new(segment_header)
+          listener.handle(deleted_event)
         end
       end
     end
