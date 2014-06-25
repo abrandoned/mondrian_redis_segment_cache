@@ -131,7 +131,7 @@ module MondrianRedisSegmentCache
       mondrian_redis.sadd(SEGMENT_HEADERS_SET_KEY, header_base64)
       
       if options[:ttl]
-        set_success = mondrian_redis.set(header_base64, body_base64, :ex => options[:ttl])
+        set_success = mondrian_redis.setex(header_base64, options[:ttl], body_base64)
       else
         set_success = mondrian_redis.set(header_base64, body_base64)
       end
@@ -195,8 +195,8 @@ module MondrianRedisSegmentCache
 
       segment_headers_base64.each do |segment_header_base64|
         # Spin through Header Set and remove any keys that are not in redis at all (they may have been deleted while offline)
-        unless mondrian_redis.exists(header_base64)
-          mondrian_redis.srem(SEGMENT_HEADERS_SET_KEY, message)
+        unless mondrian_redis.exists(segment_header_base64)
+          mondrian_redis.srem(SEGMENT_HEADERS_SET_KEY, segment_header_base64)
         end
       end
     end
