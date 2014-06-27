@@ -54,8 +54,7 @@ module MondrianRedisSegmentCache
     end
 
     def eager_load_listener(listener)
-      segment_headers_base64 = mondrian_redis.smembers(SEGMENT_HEADERS_SET_KEY)
-      segment_headers_base64.each do |segment_header_base64|
+      mondrian_redis.sscan_each(SEGMENT_HEADERS_SET_KEY) do |segment_header_base64|
         publish_created_to_listener(segment_header_base64, listener)
       end
     end
@@ -76,9 +75,9 @@ module MondrianRedisSegmentCache
 
     # returns ArrayList<SegmentHeader>
     def getSegmentHeaders()
-      segment_headers_base64 = mondrian_redis.smembers(SEGMENT_HEADERS_SET_KEY)
       segment_headers = ::Java::JavaUtil::ArrayList.new
-      segment_headers_base64.each do |segment_header_base64|
+
+      mondrian_redis.sscan_each(SEGMENT_HEADERS_SET_KEY) do |segment_header_base64|
         segment_header = segment_header_from_base64(segment_header_base64)
 
         if segment_header
@@ -163,8 +162,7 @@ module MondrianRedisSegmentCache
     def tearDown()
       if options[:delete_all_on_tear_down]
         # Remove all of the headers and the set that controls them
-        segment_headers_base64 = mondrian_redis.smembers(SEGMENT_HEADERS_SET_KEY)
-        segment_headers_base64.each do |segment_header_base64|
+        mondrian_redis.sscan_each(SEGMENT_HEADERS_SET_KEY) do |segment_header_base64|
           mondrian_redis.del(segment_header_base64)
         end
 
@@ -191,9 +189,7 @@ module MondrianRedisSegmentCache
     end
 
     def reconcile_set_and_keys
-      segment_headers_base64 = mondrian_redis.smembers(SEGMENT_HEADERS_SET_KEY)
-
-      segment_headers_base64.each do |segment_header_base64|
+      mondrian_redis.sscan_each(SEGMENT_HEADERS_SET_KEY) do |segment_header_base64|
         # Spin through Header Set and remove any keys that are not in redis at all (they may have been deleted while offline)
         unless mondrian_redis.exists(segment_header_base64)
           mondrian_redis.srem(SEGMENT_HEADERS_SET_KEY, segment_header_base64)
