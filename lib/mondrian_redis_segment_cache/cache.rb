@@ -6,7 +6,13 @@ module MondrianRedisSegmentCache
   class Cache
     include Java::MondrianSpi::SegmentCache
 
-    attr_reader :created_listener_connection, :deleted_listener_connection, :listeners, :mondrian_redis, :options
+    attr_reader :created_listener_connection, 
+                :deleted_listener_connection,
+                :evicted_listener_connection,
+                :expired_listener_connection,
+                :listeners, 
+                :mondrian_redis,
+                :options
 
     SEGMENT_HEADERS_SET_KEY = "MONDRIAN_SEGMENT_HEADERS_SET"
 
@@ -17,6 +23,8 @@ module MondrianRedisSegmentCache
       @mondrian_redis = mondrian_redis_connection
       @created_listener_connection = ::Redis.new(client_options)
       @deleted_listener_connection = ::Redis.new(client_options)
+      @evicted_listener_connection = ::Redis.new(client_options)
+      @expired_listener_connection = ::Redis.new(client_options)
       @options = Marshal.load(Marshal.dump(new_options))
 
       reset_listeners
