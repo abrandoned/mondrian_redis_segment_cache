@@ -51,7 +51,7 @@ In Redis we use the notifications api, so you must turn it on!
 It is off by default because it is a new feature and can be CPU intensive. Redis does a ton, so there is a minimum of notifications
 that must be turned on for this gem to work.
 
-`notify-keyspace-events Eg$`
+`notify-keyspace-events Egex$`
 
 This tells Redis to publish keyevent events (which means we can subscribe to things like set/del) and to publish the generic commands
 (like DEL, EXPIRE) and finally String commands (like SET)

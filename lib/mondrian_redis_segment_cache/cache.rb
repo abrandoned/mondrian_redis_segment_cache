@@ -50,7 +50,15 @@ module MondrianRedisSegmentCache
     end
 
     def deleted_event_key
-      @created_event_key ||= "__keyevent@#{client_options[:db]}__:del"
+      @deleted_event_key ||= "__keyevent@#{client_options[:db]}__:del"
+    end
+
+    def evicted_event_key
+      @evicted_event_key ||= "__keyevent@#{client_options[:db]}__:evicted"
+    end
+
+    def expired_event_key
+      @expired_event_key ||= "__keyevent@#{client_options[:db]}__:expired"
     end
 
     def eager_load_listener(listener)
@@ -122,6 +130,8 @@ module MondrianRedisSegmentCache
         mondrian_redis.srem(SEGMENT_HEADERS_SET_KEY, message)
       end
     end
+    alias_method :publish_evicted_to_listeners, :publish_deleted_to_listeners
+    alias_method :publish_expired_to_listeners, :publish_deleted_to_listeners
 
     def put(segment_header, segment_body)
       segment_header.description # Hazel adapter says this affects serialization
@@ -215,6 +225,22 @@ module MondrianRedisSegmentCache
         deleted_redis_connection.subscribe(mondrian_cache.deleted_event_key) do |on|
           on.message do |channel, message|
             mondrian_cache.publish_deleted_to_listeners(message)
+          end
+        end
+      end
+
+      Thread.new(expired_listener_connection, self) do |expired_redis_connection, mondrian_cache|
+        expired_redis_connection.subscribe(mondrian_cache.expired_event_key) do |on|
+          on.message do |channel, message|
+            mondrian_cache.publish_expired_to_listeners(message)
+          end
+        end
+      end
+
+      Thread.new(evicted_listener_connection, self) do |evicted_redis_connection, mondrian_cache|
+        evicted_redis_connection.subscribe(mondrian_cache.evicted_event_key) do |on|
+          on.message do |channel, message|
+            mondrian_cache.publish_evicted_to_listeners(message)
           end
         end
       end
