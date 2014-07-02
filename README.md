@@ -57,6 +57,17 @@ This tells Redis to publish keyevent events (which means we can subscribe to thi
 (like DEL, EXPIRE) and finally String commands (like SET)
 
 The SegmentCache uses these notifications to keep Mondrian in sync across your Mondrian instances.
+It also eager loads the current cached items into the listeners when they are added to the cache.  This allows
+an existing cache to be reused between deploys.
+
+Cache expiry is handled by the options `:ttl` and `:expires_at`
+
+If you want a static ttl (time to live) then each key that is inserted will be set to expire after the ttl completes.  This is
+not always optimal for an analytics cache and you may want all keys to expire at the same time (potentially on a daily basis).
+
+If you want all keys to expire at the same time you should use `:expires_at` in the options hash. This should be the hour that
+you want all keys to expire on.  1 being 1am, 2 being 2am, 15 being 3pm and so on.
+
 
 ## Contributing
 

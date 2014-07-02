@@ -147,8 +147,8 @@ module MondrianRedisSegmentCache
       body_base64 = segment_body_to_base64(segment_body)
       mondrian_redis.sadd(SEGMENT_HEADERS_SET_KEY, header_base64)
       
-      if options[:ttl]
-        set_success = mondrian_redis.setex(header_base64, options[:ttl], body_base64)
+      if has_expiry?
+        set_success = mondrian_redis.setex(header_base64, expires_in_seconds, body_base64)
       else
         set_success = mondrian_redis.set(header_base64, body_base64)
       end
@@ -204,6 +204,23 @@ module MondrianRedisSegmentCache
       end
 
       return mondrian_redis.client.options
+    end
+
+    def expires_in_seconds
+      return options[:ttl] if options[:ttl]
+
+      now = Time.now
+      difference_from_now = now.to_i - Time.new(now.year, now.month, now.day, options[:expires_at]).to_i
+
+      until difference_from_now > 0 do
+        difference_from_now = difference_from_now + 86_400 # already passed today, move to time tomorrow
+      end
+
+      return difference_from_now
+    end
+
+    def has_expiry?
+      options.has_key?(:ttl) || options.has_key?(:expires_at)
     end
 
     def reconcile_set_and_keys
