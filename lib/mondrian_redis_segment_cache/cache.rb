@@ -6,11 +6,11 @@ module MondrianRedisSegmentCache
   class Cache
     include Java::MondrianSpi::SegmentCache
 
-    attr_reader :created_listener_connection, 
+    attr_reader :created_listener_connection,
                 :deleted_listener_connection,
                 :evicted_listener_connection,
                 :expired_listener_connection,
-                :listeners, 
+                :listeners,
                 :mondrian_redis,
                 :options
 
@@ -146,7 +146,7 @@ module MondrianRedisSegmentCache
       header_base64 = segment_header_to_base64(segment_header)
       body_base64 = segment_body_to_base64(segment_body)
       mondrian_redis.sadd(SEGMENT_HEADERS_SET_KEY, header_base64)
-      
+
       if has_expiry?
         set_success = mondrian_redis.setex(header_base64, expires_in_seconds, body_base64)
       else
@@ -210,7 +210,14 @@ module MondrianRedisSegmentCache
       return options[:ttl] if options[:ttl]
 
       now = Time.now
-      difference_from_now = now.to_i - Time.new(now.year, now.month, now.day, options[:expires_at]).to_i
+
+      if options[:expires_at].is_a?(::Time)
+        expires_at = options[:expires_at]
+      else
+        expires_at = ::Time.new(now.year, now.month, now.day, options[:expires_at])
+      end
+
+      difference_from_now = now.to_i - expires_at.to_i
 
       until difference_from_now > 0 do
         difference_from_now = difference_from_now + 86_400 # already passed today, move to time tomorrow

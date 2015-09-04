@@ -65,8 +65,9 @@ Cache expiry is handled by the options `:ttl` and `:expires_at`
 If you want a static ttl (time to live) then each key that is inserted will be set to expire after the ttl completes.  This is
 not always optimal for an analytics cache and you may want all keys to expire at the same time (potentially on a daily basis).
 
-If you want all keys to expire at the same time you should use `:expires_at` in the options hash. This should be the hour that
-you want all keys to expire on.  1 being 1am, 2 being 2am, 15 being 3pm and so on.
+If you want all keys to expire at the same time you should use `:expires_at` in the options hash. This should either be the hour
+that you want all keys to expire on, or a `Time` object with a custom time. If you use `:expires_at` as an hour of expiration then
+1 is 1am, 2 is 2am, 15 is 3pm and so on.
 
 
 ## Contributing
