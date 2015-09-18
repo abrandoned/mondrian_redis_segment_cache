@@ -271,7 +271,7 @@ module MondrianRedisSegmentCache
     end
 
     def register_created_listener
-      @created_listener_thread << Thread.new(created_listener_connection, self) do |created_redis_connection, mondrian_cache|
+      @created_listener_thread = Thread.new(created_listener_connection, self) do |created_redis_connection, mondrian_cache|
         created_redis_connection.subscribe(mondrian_cache.created_event_key) do |on|
           on.message do |channel, message|
             mondrian_cache.publish_created_to_listeners(message)
@@ -281,7 +281,7 @@ module MondrianRedisSegmentCache
     end
 
     def register_deleted_listener
-      @deleted_listener_thread << Thread.new(deleted_listener_connection, self) do |deleted_redis_connection, mondrian_cache|
+      @deleted_listener_thread = Thread.new(deleted_listener_connection, self) do |deleted_redis_connection, mondrian_cache|
         deleted_redis_connection.subscribe(mondrian_cache.deleted_event_key) do |on|
           on.message do |channel, message|
             mondrian_cache.publish_deleted_to_listeners(message)
@@ -291,7 +291,7 @@ module MondrianRedisSegmentCache
     end
 
     def register_expired_listener
-      @expired_listener_thread << Thread.new(expired_listener_connection, self) do |expired_redis_connection, mondrian_cache|
+      @expired_listener_thread = Thread.new(expired_listener_connection, self) do |expired_redis_connection, mondrian_cache|
         expired_redis_connection.subscribe(mondrian_cache.expired_event_key) do |on|
           on.message do |channel, message|
             mondrian_cache.publish_expired_to_listeners(message)
@@ -301,7 +301,7 @@ module MondrianRedisSegmentCache
     end
 
     def register_evicted_listener
-      @evicted_listener_thread << Thread.new(evicted_listener_connection, self) do |evicted_redis_connection, mondrian_cache|
+      @evicted_listener_thread = Thread.new(evicted_listener_connection, self) do |evicted_redis_connection, mondrian_cache|
         evicted_redis_connection.subscribe(mondrian_cache.evicted_event_key) do |on|
           on.message do |channel, message|
             mondrian_cache.publish_evicted_to_listeners(message)
