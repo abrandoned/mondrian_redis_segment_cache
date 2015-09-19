@@ -7,12 +7,16 @@ module MondrianRedisSegmentCache
     include Java::MondrianSpi::SegmentCache
 
     attr_reader :created_listener_connection,
-                :deleted_listener_connection,
-                :evicted_listener_connection,
-                :expired_listener_connection,
-                :listeners,
-                :mondrian_redis,
-                :options
+      :deleted_listener_connection,
+      :evicted_listener_connection,
+      :expired_listener_connection,
+      :created_listener_thread,
+      :deleted_listener_thread,
+      :evicted_listener_thread,
+      :expired_listener_thread,
+      :listeners,
+      :mondrian_redis,
+      :options
 
     SEGMENT_HEADERS_SET_KEY = "MONDRIAN_SEGMENT_HEADERS_SET"
 
@@ -111,12 +115,16 @@ module MondrianRedisSegmentCache
         created_event = ::MondrianRedisSegmentCache::CreatedEvent.new(segment_header)
         listener.handle(created_event)
       end
+
+      check_listener_threads
     end
 
     def publish_created_to_listeners(message)
       listeners.each do |listener|
         publish_created_to_listener(message, listener)
       end
+
+      check_listener_threads
     end
 
     def publish_deleted_to_listener(message, listener)
@@ -126,6 +134,8 @@ module MondrianRedisSegmentCache
         deleted_event = ::MondrianRedisSegmentCache::DeletedEvent.new(segment_header)
         listener.handle(deleted_event)
       end
+
+      check_listener_threads
     end
 
     def publish_deleted_to_listeners(message)
@@ -137,6 +147,8 @@ module MondrianRedisSegmentCache
       if mondrian_redis.sismember(SEGMENT_HEADERS_SET_KEY, message)
         mondrian_redis.srem(SEGMENT_HEADERS_SET_KEY, message)
       end
+
+      check_listener_threads
     end
     alias_method :publish_evicted_to_listeners, :publish_deleted_to_listeners
     alias_method :publish_expired_to_listeners, :publish_deleted_to_listeners
@@ -175,11 +187,14 @@ module MondrianRedisSegmentCache
 
     def shutdown!
       # Ouch, why so harsh?
-      @redis_events_threads.map(&:kill)
+      created_listener_thread.kill if created_listener_thread && created_listener_thread.alive?
+      deleted_listener_thread.kill if deleted_listener_thread && deleted_listener_thread.alive?
+      evicted_listener_thread.kill if evicted_listener_thread && evicted_listener_thread.alive?
+      expired_listener_thread.kill if expired_listener_thread && expired_listener_thread.alive?
     end
 
     def start
-      register_for_redis_events
+      check_listener_threads
     end
 
     def supportsRichIndex()
@@ -202,6 +217,13 @@ module MondrianRedisSegmentCache
     ##
     # Private Instance Methods
     #
+    def check_listener_threads
+      register_created_listener if !created_listener_thread.respond_to?(:alive?) || !created_listener_thread.alive?
+      register_deleted_listener if !deleted_listener_thread.respond_to?(:alive?) || !deleted_listener_thread.alive?
+      register_expired_listener if !expired_listener_thread.respond_to?(:alive?) || !expired_listener_thread.alive?
+      register_evicted_listener if !evicted_listener_thread.respond_to?(:alive?) || !evicted_listener_thread.alive?
+    end
+
     def client_options
       # Redis 3.0.4 does not have options where 3.1 does
       unless mondrian_redis.client.respond_to?(:options)
@@ -248,47 +270,46 @@ module MondrianRedisSegmentCache
       end
     end
 
-    def register_for_redis_events
-      return if @listeners_registered
-
-      # Not the best multi-threaded code, but its something that "works" for now and we will
-      # worry about "best" later
-      @redis_events_threads = []
-
-      @redis_events_threads << Thread.new(created_listener_connection, self) do |created_redis_connection, mondrian_cache|
+    def register_created_listener
+      @created_listener_thread = Thread.new(created_listener_connection, self) do |created_redis_connection, mondrian_cache|
         created_redis_connection.subscribe(mondrian_cache.created_event_key) do |on|
           on.message do |channel, message|
             mondrian_cache.publish_created_to_listeners(message)
           end
         end
       end
+    end
 
-      @redis_events_threads << Thread.new(deleted_listener_connection, self) do |deleted_redis_connection, mondrian_cache|
+    def register_deleted_listener
+      @deleted_listener_thread = Thread.new(deleted_listener_connection, self) do |deleted_redis_connection, mondrian_cache|
         deleted_redis_connection.subscribe(mondrian_cache.deleted_event_key) do |on|
           on.message do |channel, message|
             mondrian_cache.publish_deleted_to_listeners(message)
           end
         end
       end
+    end
 
-      @redis_events_threads << Thread.new(expired_listener_connection, self) do |expired_redis_connection, mondrian_cache|
+    def register_expired_listener
+      @expired_listener_thread = Thread.new(expired_listener_connection, self) do |expired_redis_connection, mondrian_cache|
         expired_redis_connection.subscribe(mondrian_cache.expired_event_key) do |on|
           on.message do |channel, message|
             mondrian_cache.publish_expired_to_listeners(message)
           end
         end
       end
+    end
 
-      @redis_events_threads << Thread.new(evicted_listener_connection, self) do |evicted_redis_connection, mondrian_cache|
+    def register_evicted_listener
+      @evicted_listener_thread = Thread.new(evicted_listener_connection, self) do |evicted_redis_connection, mondrian_cache|
         evicted_redis_connection.subscribe(mondrian_cache.evicted_event_key) do |on|
           on.message do |channel, message|
             mondrian_cache.publish_evicted_to_listeners(message)
           end
         end
       end
-
-      @listeners_registered = true
     end
+
 
     def segment_body_from_base64(segment_body_base64)
       return nil unless segment_body_base64
