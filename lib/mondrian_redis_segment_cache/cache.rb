@@ -211,14 +211,10 @@ module MondrianRedisSegmentCache
         end
       end
 
-      headers.each do |header|
-        # Spin through Header Set and remove any keys that are not in redis at all (they may have been deleted while offline)
-        next if mondrian_redis.with do |connection|
-          connection.exists(header)
-        end
-
-        mondrian_redis.with do |connection|
-          connection.srem(SEGMENT_HEADERS_SET_KEY, header)
+      mondrian_redis.with do |connection|
+        headers.each do |header|
+          # Spin through Header Set and remove any keys that are not in redis at all (they may have been deleted while offline)
+          connection.srem(SEGMENT_HEADERS_SET_KEY, header) unless connection.exists(header)
         end
       end
     end
