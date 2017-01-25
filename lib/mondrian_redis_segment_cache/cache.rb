@@ -1,4 +1,5 @@
 require 'redis'
+require 'concurrent'
 require 'mondrian_redis_segment_cache/created_event'
 require 'mondrian_redis_segment_cache/deleted_event'
 
@@ -6,15 +7,8 @@ module MondrianRedisSegmentCache
   class Cache
     include Java::MondrianSpi::SegmentCache
 
-    attr_reader :created_listener_connection,
-      :deleted_listener_connection,
-      :evicted_listener_connection,
-      :expired_listener_connection,
-      :created_listener_thread,
-      :deleted_listener_thread,
-      :evicted_listener_thread,
-      :expired_listener_thread,
-      :listeners,
+    attr_reader :listeners,
+      :local_cache_set,
       :mondrian_redis,
       :options
 
@@ -25,15 +19,22 @@ module MondrianRedisSegmentCache
     #
     def initialize(mondrian_redis_connection, new_options = {})
       @mondrian_redis = mondrian_redis_connection
-      @created_listener_connection = ::Redis.new(client_options)
-      @deleted_listener_connection = ::Redis.new(client_options)
-      @evicted_listener_connection = ::Redis.new(client_options)
-      @expired_listener_connection = ::Redis.new(client_options)
       @options = Marshal.load(Marshal.dump(new_options))
+      @listeners = Set.new
+      @local_cache_set = Set.new
 
-      reset_listeners
-      start
+      ##
+      # Having a TimerTask reconcile every 5 minutes so the local listeners are eventually consistent with
+      # respect to what is in the cache and what has been done .... allows us to get rid of the event
+      # subscribers in the redis API ... consider the job to have timed out after 45 seconds
+      @reconcile_task = ::Concurrent::TimerTask.new(:execution_interval => 360, :timeout_interval => 45) do
+        reconcile_set_and_keys
+        reconcile_local_set_with_redis
+      end
+
+      @reconcile_task.execute
       reconcile_set_and_keys
+      reconcile_local_set_with_redis
     end
 
     ##
@@ -41,52 +42,19 @@ module MondrianRedisSegmentCache
     #
     def addListener(segment_cache_listener)
       listeners << segment_cache_listener
-      eager_load_listener(segment_cache_listener)
-    end
-
-    # returns boolean
-    # takes mondrian.spi.SegmentHeader
-    def contains(segment_header)
-      segment_header.description # Hazel adapter says this affects serialization
-      header_base64 = segment_header_to_base64(segment_header)
-
-      if header_base64
-        return mondrian_redis.exists(header_base64)
-      end
-
-      return false
-    end
-
-    def created_event_key
-      @created_event_key ||= "__keyevent@#{client_options[:db]}__:set"
-    end
-
-    def deleted_event_key
-      @deleted_event_key ||= "__keyevent@#{client_options[:db]}__:del"
-    end
-
-    def evicted_event_key
-      @evicted_event_key ||= "__keyevent@#{client_options[:db]}__:evicted"
-    end
-
-    def expired_event_key
-      @expired_event_key ||= "__keyevent@#{client_options[:db]}__:expired"
-    end
-
-    def eager_load_listener(listener)
-      mondrian_redis.sscan_each(SEGMENT_HEADERS_SET_KEY) do |segment_header_base64|
-        publish_created_to_listener(segment_header_base64, listener)
-      end
     end
 
     # returns mondrian.spi.SegmentBody
     # takes mondrian.spi.SegmentHeader
     def get(segment_header)
-      segment_header.description # Hazel adapter says this affects serialization
+      segment_header.getDescription # Hazel adapter says this affects serialization
       header_base64 = segment_header_to_base64(segment_header)
 
       if header_base64
-        body_base64 = mondrian_redis.get(header_base64)
+        body_base64 = mondrian_redis.with do |connection|
+          connection.get(header_base64)
+        end
+
         return segment_body_from_base64(body_base64)
       end
 
@@ -97,83 +65,52 @@ module MondrianRedisSegmentCache
     def getSegmentHeaders()
       segment_headers = ::Java::JavaUtil::ArrayList.new
 
-      mondrian_redis.sscan_each(SEGMENT_HEADERS_SET_KEY) do |segment_header_base64|
-        segment_header = segment_header_from_base64(segment_header_base64)
-
-        if segment_header
-          segment_headers << segment_header
+      mondrian_redis.with do |connection|
+        connection.sscan_each(SEGMENT_HEADERS_SET_KEY) do |segment_header_base64|
+          segment_header = segment_header_from_base64(segment_header_base64)
+          segment_headers << segment_header if segment_header
         end
       end
 
       return segment_headers
     end
 
-    def publish_created_to_listener(message, listener)
-      segment_header = segment_header_from_base64(message)
-
-      if segment_header
-        created_event = ::MondrianRedisSegmentCache::CreatedEvent.new(segment_header)
-        listener.handle(created_event)
-      end
-
-      check_listener_threads
-    end
-
-    def publish_created_to_listeners(message)
-      listeners.each do |listener|
-        publish_created_to_listener(message, listener)
-      end
-
-      check_listener_threads
-    end
-
-    def publish_deleted_to_listener(message, listener)
-      segment_header = segment_header_from_base64(message)
-
-      if segment_header
-        deleted_event = ::MondrianRedisSegmentCache::DeletedEvent.new(segment_header)
-        listener.handle(deleted_event)
-      end
-
-      check_listener_threads
-    end
-
-    def publish_deleted_to_listeners(message)
-      listeners.each do |listener|
-        publish_deleted_to_listener(message, listener)
-      end
-
-      # Each server can tell the Set to remove the key as it may be expired
-      if mondrian_redis.sismember(SEGMENT_HEADERS_SET_KEY, message)
-        mondrian_redis.srem(SEGMENT_HEADERS_SET_KEY, message)
-      end
-
-      check_listener_threads
-    end
-    alias_method :publish_evicted_to_listeners, :publish_deleted_to_listeners
-    alias_method :publish_expired_to_listeners, :publish_deleted_to_listeners
-
     def put(segment_header, segment_body)
-      segment_header.description # Hazel adapter says this affects serialization
+      set_success = nil
+      segment_header.getDescription # Hazel adapter says this affects serialization
       header_base64 = segment_header_to_base64(segment_header)
       body_base64 = segment_body_to_base64(segment_body)
-      mondrian_redis.sadd(SEGMENT_HEADERS_SET_KEY, header_base64)
-
-      if has_expiry?
-        set_success = mondrian_redis.setex(header_base64, expires_in_seconds, body_base64)
-      else
-        set_success = mondrian_redis.set(header_base64, body_base64)
+      @local_cache_set << header_base64
+      mondrian_redis.with do |connection|
+        connection.sadd(SEGMENT_HEADERS_SET_KEY, header_base64)
       end
 
+      if has_expiry?
+        set_success = mondrian_redis.with do |connection|
+          connection.setex(header_base64, expires_in_seconds, body_base64)
+        end
+      else
+        set_success = mondrian_redis.with do |connection|
+          connection.set(header_base64, body_base64)
+        end
+      end
+
+      publish_created_to_listeners(header_base64)
       return ("#{set_success}".upcase == "OK" || set_success == true) # weird polymorphic return ?
     end
 
     def remove(segment_header)
-      segment_header.description # Hazel adapter says this affects serialization
+      segment_header.getDescription # Hazel adapter says this affects serialization
       header_base64 = segment_header_to_base64(segment_header)
-      mondrian_redis.srem(SEGMENT_HEADERS_SET_KEY, header_base64)
-      deleted_keys = mondrian_redis.del(header_base64)
+      mondrian_redis.with do |connection|
+        connection.srem(SEGMENT_HEADERS_SET_KEY, header_base64)
+      end
 
+      deleted_keys = mondrian_redis.with do |connection|
+        connection.del(header_base64)
+      end
+
+      publish_deleted_to_listeners(header_base64)
       return deleted_keys >= 1
     end
 
@@ -181,35 +118,12 @@ module MondrianRedisSegmentCache
       listeners.delete(segment_cache_listener)
     end
 
-    def reset_listeners
-      @listeners = Set.new
-    end
-
-    def shutdown!
-      # Ouch, why so harsh?
-      created_listener_thread.kill if created_listener_thread && created_listener_thread.alive?
-      deleted_listener_thread.kill if deleted_listener_thread && deleted_listener_thread.alive?
-      evicted_listener_thread.kill if evicted_listener_thread && evicted_listener_thread.alive?
-      expired_listener_thread.kill if expired_listener_thread && expired_listener_thread.alive?
-    end
-
-    def start
-      check_listener_threads
-    end
-
     def supportsRichIndex()
       true # this is why we are serializing the headers to base64
     end
 
     def tearDown()
-      if options[:delete_all_on_tear_down]
-        # Remove all of the headers and the set that controls them
-        mondrian_redis.sscan_each(SEGMENT_HEADERS_SET_KEY) do |segment_header_base64|
-          mondrian_redis.del(segment_header_base64)
-        end
-
-        mondrian_redis.del(SEGMENT_HEADERS_SET_KEY)
-      end
+      #no-op
     end
 
     private
@@ -217,26 +131,6 @@ module MondrianRedisSegmentCache
     ##
     # Private Instance Methods
     #
-    def check_listener_threads
-      register_created_listener if !created_listener_thread.respond_to?(:alive?) || !created_listener_thread.alive?
-      register_deleted_listener if !deleted_listener_thread.respond_to?(:alive?) || !deleted_listener_thread.alive?
-      register_expired_listener if !expired_listener_thread.respond_to?(:alive?) || !expired_listener_thread.alive?
-      register_evicted_listener if !evicted_listener_thread.respond_to?(:alive?) || !evicted_listener_thread.alive?
-    end
-
-    def client_options
-      # Redis 3.0.4 does not have options where 3.1 does
-      unless mondrian_redis.client.respond_to?(:options)
-        class << mondrian_redis.client
-          def options
-            @options
-          end
-        end
-      end
-
-      return mondrian_redis.client.options
-    end
-
     def expires_in_seconds
       return options[:ttl] if options[:ttl]
 
@@ -248,7 +142,7 @@ module MondrianRedisSegmentCache
         expires_at = ::Time.new(now.year, now.month, now.day, options[:expires_at])
       end
 
-      difference_from_now = now.to_i - expires_at.to_i
+      difference_from_now = expires_at.to_i - now.to_i
 
       until difference_from_now > 0 do
         difference_from_now = difference_from_now + 86_400 # already passed today, move to time tomorrow
@@ -261,55 +155,74 @@ module MondrianRedisSegmentCache
       options.has_key?(:ttl) || options.has_key?(:expires_at)
     end
 
+    def publish_created_to_listener(message, listener)
+      segment_header = segment_header_from_base64(message)
+
+      if segment_header
+        created_event = ::MondrianRedisSegmentCache::CreatedEvent.new(segment_header)
+        listener.handle(created_event)
+      end
+    end
+
+    def publish_created_to_listeners(message)
+      listeners.each do |listener|
+        publish_created_to_listener(message, listener)
+      end
+    end
+
+    def publish_deleted_to_listener(message, listener)
+      segment_header = segment_header_from_base64(message)
+
+      if segment_header
+        deleted_event = ::MondrianRedisSegmentCache::DeletedEvent.new(segment_header)
+        listener.handle(deleted_event)
+      end
+    end
+
+    def publish_deleted_to_listeners(message)
+      listeners.each do |listener|
+        publish_deleted_to_listener(message, listener)
+      end
+    end
+
+    def reconcile_local_set_with_redis
+      remote_set = Set.new
+
+      mondrian_redis.with do |connection|
+        connection.sscan_each(SEGMENT_HEADERS_SET_KEY) do |segment_header_base64|
+          remote_set << segment_header_base64
+        end
+      end
+
+      remote_added_keys = remote_set - local_cache_set
+      remote_removed_keys = local_cache_set - remote_set
+
+      remote_added_keys.each do |remote_added_key|
+        @local_cache_set << remote_added_key
+        publish_created_to_listeners(remote_added_key)
+      end
+
+      remote_removed_keys.each do |remote_removed_key|
+        @local_cache_set.delete(remote_removed_key)
+        publish_deleted_to_listeners(remote_removed_key)
+      end
+    end
+
     def reconcile_set_and_keys
-      mondrian_redis.sscan_each(SEGMENT_HEADERS_SET_KEY) do |segment_header_base64|
-        # Spin through Header Set and remove any keys that are not in redis at all (they may have been deleted while offline)
-        unless mondrian_redis.exists(segment_header_base64)
-          mondrian_redis.srem(SEGMENT_HEADERS_SET_KEY, segment_header_base64)
+      headers = []
+      mondrian_redis.with do |connection|
+        connection.sscan_each(SEGMENT_HEADERS_SET_KEY) do |segment_header_base64|
+          headers << segment_header_base64
+        end
+      end
+
+      mondrian_redis.with do |connection|
+        headers.each do |header|
+          # Spin through Header Set and remove any keys that are not in redis at all (they may have been deleted while offline)
+          connection.srem(SEGMENT_HEADERS_SET_KEY, header) unless connection.exists(header)
         end
       end
     end
-
-    def register_created_listener
-      @created_listener_thread = Thread.new(created_listener_connection, self) do |created_redis_connection, mondrian_cache|
-        created_redis_connection.subscribe(mondrian_cache.created_event_key) do |on|
-          on.message do |channel, message|
-            mondrian_cache.publish_created_to_listeners(message)
-          end
-        end
-      end
-    end
-
-    def register_deleted_listener
-      @deleted_listener_thread = Thread.new(deleted_listener_connection, self) do |deleted_redis_connection, mondrian_cache|
-        deleted_redis_connection.subscribe(mondrian_cache.deleted_event_key) do |on|
-          on.message do |channel, message|
-            mondrian_cache.publish_deleted_to_listeners(message)
-          end
-        end
-      end
-    end
-
-    def register_expired_listener
-      @expired_listener_thread = Thread.new(expired_listener_connection, self) do |expired_redis_connection, mondrian_cache|
-        expired_redis_connection.subscribe(mondrian_cache.expired_event_key) do |on|
-          on.message do |channel, message|
-            mondrian_cache.publish_expired_to_listeners(message)
-          end
-        end
-      end
-    end
-
-    def register_evicted_listener
-      @evicted_listener_thread = Thread.new(evicted_listener_connection, self) do |evicted_redis_connection, mondrian_cache|
-        evicted_redis_connection.subscribe(mondrian_cache.evicted_event_key) do |on|
-          on.message do |channel, message|
-            mondrian_cache.publish_evicted_to_listeners(message)
-          end
-        end
-      end
-    end
-
 
     def segment_body_from_base64(segment_body_base64)
       return nil unless segment_body_base64
