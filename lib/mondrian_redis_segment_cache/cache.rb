@@ -32,6 +32,7 @@ module MondrianRedisSegmentCache
         reconcile_local_set_with_redis
       end
 
+      @reconcile_task.execute
       reconcile_set_and_keys
       reconcile_local_set_with_redis
     end
@@ -79,6 +80,7 @@ module MondrianRedisSegmentCache
       segment_header.getDescription # Hazel adapter says this affects serialization
       header_base64 = segment_header_to_base64(segment_header)
       body_base64 = segment_body_to_base64(segment_body)
+      @local_cache_set << header_base64
       mondrian_redis.with do |connection|
         connection.sadd(SEGMENT_HEADERS_SET_KEY, header_base64)
       end
@@ -93,6 +95,7 @@ module MondrianRedisSegmentCache
         end
       end
 
+      publish_created_to_listeners(header_base64)
       return ("#{set_success}".upcase == "OK" || set_success == true) # weird polymorphic return ?
     end
 
@@ -107,6 +110,7 @@ module MondrianRedisSegmentCache
         connection.del(header_base64)
       end
 
+      publish_deleted_to_listeners(header_base64)
       return deleted_keys >= 1
     end
 
@@ -192,13 +196,14 @@ module MondrianRedisSegmentCache
 
       remote_added_keys = remote_set - local_cache_set
       remote_removed_keys = local_cache_set - remote_set
-      @local_cache_set = remote_set
 
       remote_added_keys.each do |remote_added_key|
+        @local_cache_set << remote_added_key
         publish_created_to_listeners(remote_added_key)
       end
 
       remote_removed_keys.each do |remote_removed_key|
+        @local_cache_set.delete(remote_removed_key)
         publish_deleted_to_listeners(remote_removed_key)
       end
     end
