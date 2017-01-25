@@ -142,7 +142,7 @@ module MondrianRedisSegmentCache
         expires_at = ::Time.new(now.year, now.month, now.day, options[:expires_at])
       end
 
-      difference_from_now = now.to_i - expires_at.to_i
+      difference_from_now = expires_at.to_i - now.to_i
 
       until difference_from_now > 0 do
         difference_from_now = difference_from_now + 86_400 # already passed today, move to time tomorrow
