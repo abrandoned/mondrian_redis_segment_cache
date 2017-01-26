@@ -28,13 +28,11 @@ module MondrianRedisSegmentCache
       # respect to what is in the cache and what has been done .... allows us to get rid of the event
       # subscribers in the redis API ... consider the job to have timed out after 45 seconds
       @reconcile_task = ::Concurrent::TimerTask.new(:execution_interval => 360, :timeout_interval => 45) do
-        reconcile_set_and_keys
-        reconcile_local_set_with_redis
+        reload
       end
 
       @reconcile_task.execute
-      reconcile_set_and_keys
-      reconcile_local_set_with_redis
+      reload
     end
 
     ##
@@ -97,6 +95,11 @@ module MondrianRedisSegmentCache
 
       publish_created_to_listeners(header_base64)
       return ("#{set_success}".upcase == "OK" || set_success == true) # weird polymorphic return ?
+    end
+
+    def reload
+      reconcile_set_and_keys
+      reconcile_local_set_with_redis
     end
 
     def remove(segment_header)
