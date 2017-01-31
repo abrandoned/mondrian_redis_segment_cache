@@ -20,8 +20,8 @@ module MondrianRedisSegmentCache
     def initialize(mondrian_redis_connection, new_options = {})
       @mondrian_redis = mondrian_redis_connection
       @options = Marshal.load(Marshal.dump(new_options))
-      @listeners = Set.new
-      @local_cache_set = Set.new
+      @listeners = ::Concurrent::Array.new
+      @local_cache_set = ::Concurrent::Array.new
 
       ##
       # Having a TimerTask reconcile every 5 minutes so the local listeners are eventually consistent with
@@ -39,7 +39,8 @@ module MondrianRedisSegmentCache
     # Public Instance Methods
     #
     def addListener(segment_cache_listener)
-      listeners << segment_cache_listener
+      listeners << segment_cache_listener unless listeners.include?(segment_cache_listener)
+      listeners.uniq!
     end
 
     # returns mondrian.spi.SegmentBody
@@ -78,7 +79,7 @@ module MondrianRedisSegmentCache
       segment_header.getDescription # Hazel adapter says this affects serialization
       header_base64 = segment_header_to_base64(segment_header)
       body_base64 = segment_body_to_base64(segment_body)
-      @local_cache_set << header_base64
+      @local_cache_set << header_base64 unless @local_cache_set.include?(header_base64)
       mondrian_redis.with do |connection|
         connection.sadd(SEGMENT_HEADERS_SET_KEY, header_base64)
       end
@@ -93,7 +94,6 @@ module MondrianRedisSegmentCache
         end
       end
 
-      publish_created_to_listeners(header_base64)
       return ("#{set_success}".upcase == "OK" || set_success == true) # weird polymorphic return ?
     end
 
@@ -113,7 +113,6 @@ module MondrianRedisSegmentCache
         connection.del(header_base64)
       end
 
-      publish_deleted_to_listeners(header_base64)
       return deleted_keys >= 1
     end
 
@@ -189,7 +188,7 @@ module MondrianRedisSegmentCache
     end
 
     def reconcile_local_set_with_redis
-      remote_set = Set.new
+      remote_set = []
 
       mondrian_redis.with do |connection|
         connection.sscan_each(SEGMENT_HEADERS_SET_KEY) do |segment_header_base64|
@@ -197,8 +196,10 @@ module MondrianRedisSegmentCache
         end
       end
 
-      remote_added_keys = remote_set - local_cache_set
-      remote_removed_keys = local_cache_set - remote_set
+      local_copy = []
+      local_cache_set.each { |value| local_copy << value }
+      remote_added_keys = remote_set - local_copy
+      remote_removed_keys = local_copy - remote_set
 
       remote_added_keys.each do |remote_added_key|
         @local_cache_set << remote_added_key
@@ -209,6 +210,8 @@ module MondrianRedisSegmentCache
         @local_cache_set.delete(remote_removed_key)
         publish_deleted_to_listeners(remote_removed_key)
       end
+
+      @local_cache_set.uniq!
     end
 
     def reconcile_set_and_keys
