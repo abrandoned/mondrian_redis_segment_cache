@@ -1,9 +1,16 @@
 require 'redis'
 require 'concurrent'
+require 'jruby/synchronized'
 require 'mondrian_redis_segment_cache/created_event'
 require 'mondrian_redis_segment_cache/deleted_event'
+require 'set'
 
 module MondrianRedisSegmentCache
+
+  class SynchronizedSet < ::Set
+    include ::JRuby::Synchronized
+  end
+
   class Cache
     include Java::MondrianSpi::SegmentCache
 
@@ -20,14 +27,14 @@ module MondrianRedisSegmentCache
     def initialize(mondrian_redis_connection, new_options = {})
       @mondrian_redis = mondrian_redis_connection
       @options = Marshal.load(Marshal.dump(new_options))
-      @listeners = ::Concurrent::Array.new
-      @local_cache_set = ::Concurrent::Array.new
+      @listeners = SynchronizedSet.new
+      @local_cache_set = SynchronizedSet.new
 
       ##
-      # Having a TimerTask reconcile every 5 minutes so the local listeners are eventually consistent with
+      # Having a TimerTask reconcile every 6 minutes so the local listeners are eventually consistent with
       # respect to what is in the cache and what has been done .... allows us to get rid of the event
-      # subscribers in the redis API ... consider the job to have timed out after 45 seconds
-      @reconcile_task = ::Concurrent::TimerTask.new(:execution_interval => 360, :timeout_interval => 45) do
+      # subscribers in the redis API ... consider the job to have timed out after 60 seconds
+      @reconcile_task = ::Concurrent::TimerTask.new(:execution_interval => 360, :timeout_interval => 60) do
         reload
       end
 
@@ -39,8 +46,7 @@ module MondrianRedisSegmentCache
     # Public Instance Methods
     #
     def addListener(segment_cache_listener)
-      listeners << segment_cache_listener unless listeners.include?(segment_cache_listener)
-      listeners.uniq!
+      listeners << segment_cache_listener
     end
 
     # returns mondrian.spi.SegmentBody
@@ -79,7 +85,7 @@ module MondrianRedisSegmentCache
       segment_header.getDescription # Hazel adapter says this affects serialization
       header_base64 = segment_header_to_base64(segment_header)
       body_base64 = segment_body_to_base64(segment_body)
-      @local_cache_set << header_base64 unless @local_cache_set.include?(header_base64)
+      @local_cache_set << header_base64
       mondrian_redis.with do |connection|
         connection.sadd(SEGMENT_HEADERS_SET_KEY, header_base64)
       end
@@ -210,8 +216,6 @@ module MondrianRedisSegmentCache
         @local_cache_set.delete(remote_removed_key)
         publish_deleted_to_listeners(remote_removed_key)
       end
-
-      @local_cache_set.uniq!
     end
 
     def reconcile_set_and_keys
