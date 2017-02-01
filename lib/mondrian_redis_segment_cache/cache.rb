@@ -142,10 +142,17 @@ module MondrianRedisSegmentCache
     def expires_in_seconds
       return options[:ttl] if options[:ttl]
 
+      expires_at = nil
       now = Time.now
 
-      if options[:expires_at].is_a?(::Time)
+      case
+      when options[:expires_callback]
+        expires_at = options[:expires_callback].call # for future configurability of expiry through registering callback
+      when options[:expires_at].is_a?(::Time)
         expires_at = options[:expires_at]
+      when options[:expires] == :hourly
+        one_hour = now + 4200 # one hour, 10 minutes to cover the 10:59 problem where it would expire at 11
+        expires_at = ::Time.new(one_hour.year, one_hour.month, one_hour.day, one_hour.hour)
       else
         expires_at = ::Time.new(now.year, now.month, now.day, options[:expires_at])
       end
