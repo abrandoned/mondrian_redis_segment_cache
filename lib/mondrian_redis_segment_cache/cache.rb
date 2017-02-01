@@ -146,6 +146,8 @@ module MondrianRedisSegmentCache
       now = Time.now
 
       case
+      when options[:expires_callback]
+        expires_at = options[:expires_callback].call # for future configurability of expiry through registering callback
       when options[:expires_at].is_a?(::Time)
         expires_at = options[:expires_at]
       when options[:expires] == :hourly
