@@ -167,7 +167,7 @@ module MondrianRedisSegmentCache
     end
 
     def has_expiry?
-      options.has_key?(:ttl) || options.has_key?(:expires_at)
+      options.has_key?(:ttl) || options.has_key?(:expires_at) || options.has_key?(:expires) || options.has_key?(:expires_callback)
     end
 
     def publish_created_to_listener(message, listener)
