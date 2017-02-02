@@ -104,8 +104,33 @@ module MondrianRedisSegmentCache
     end
 
     def reload
-      reconcile_set_and_keys
-      reconcile_local_set_with_redis
+      existing_hash_vals = ::Set.new
+
+      mondrian_redis.with do |connection|
+        connection.sscan_each(SEGMENT_HEADERS_SET_KEY) do |segment_header_base64|
+          unless connection.exists(segment_header_base64)
+            connection.srem(SEGMENT_HEADERS_SET_KEY, segment_header_base64)
+            next
+          end
+
+          existing_hash_vals << segment_header_base64.hash
+
+          unless local_cache_set.include?(segment_header_base64)
+            @local_cache_set << segment_header_base64
+            publish_created_to_listeners(segment_header_base64)
+          end
+        end
+      end
+
+      local_cache_set.select! do |segment|
+        unless existing_hash_vals.include?(segment.hash)
+          publish_deleted_to_listeners(segment)
+        end
+
+        existing_hash_vals.include?(segment.hash)
+      end
+
+      true
     end
 
     def remove(segment_header)
@@ -167,7 +192,7 @@ module MondrianRedisSegmentCache
     end
 
     def has_expiry?
-      options.has_key?(:ttl) || options.has_key?(:expires_at)
+      options.has_key?(:ttl) || options.has_key?(:expires_at) || options.has_key?(:expires) || options.has_key?(:expires_callback)
     end
 
     def publish_created_to_listener(message, listener)
@@ -200,49 +225,9 @@ module MondrianRedisSegmentCache
       end
     end
 
-    def reconcile_local_set_with_redis
-      remote_set = []
-
-      mondrian_redis.with do |connection|
-        connection.sscan_each(SEGMENT_HEADERS_SET_KEY) do |segment_header_base64|
-          remote_set << segment_header_base64
-        end
-      end
-
-      local_copy = []
-      local_cache_set.each { |value| local_copy << value }
-      remote_added_keys = remote_set - local_copy
-      remote_removed_keys = local_copy - remote_set
-
-      remote_added_keys.each do |remote_added_key|
-        @local_cache_set << remote_added_key
-        publish_created_to_listeners(remote_added_key)
-      end
-
-      remote_removed_keys.each do |remote_removed_key|
-        @local_cache_set.delete(remote_removed_key)
-        publish_deleted_to_listeners(remote_removed_key)
-      end
-    end
-
-    def reconcile_set_and_keys
-      headers = []
-      mondrian_redis.with do |connection|
-        connection.sscan_each(SEGMENT_HEADERS_SET_KEY) do |segment_header_base64|
-          headers << segment_header_base64
-        end
-      end
-
-      mondrian_redis.with do |connection|
-        headers.each do |header|
-          # Spin through Header Set and remove any keys that are not in redis at all (they may have been deleted while offline)
-          connection.srem(SEGMENT_HEADERS_SET_KEY, header) unless connection.exists(header)
-        end
-      end
-    end
-
     def segment_body_from_base64(segment_body_base64)
       return nil unless segment_body_base64
+      return nil if segment_body_base64.empty?
       return ::Java::MondrianSpi::SegmentBody.from_base64(segment_body_base64)
     rescue
       return nil
@@ -255,6 +240,7 @@ module MondrianRedisSegmentCache
 
     def segment_header_from_base64(segment_header_base64)
       return nil unless segment_header_base64
+      return nil if segment_header_base64.empty?
       return ::Java::MondrianSpi::SegmentHeader.from_base64(segment_header_base64)
     rescue
       return nil
