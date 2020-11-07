@@ -18,7 +18,7 @@ Gem::Specification.new do |gem|
   gem.test_files    = gem.files.grep(%r{^(test|spec|features)/})
   gem.require_paths = ["lib"]
 
-  gem.add_dependency "redis"
+  gem.add_dependency "redis", "> 3"
   gem.add_dependency "java_to_base64"
   gem.add_dependency "mondrian-olap"
   gem.add_dependency "concurrent-ruby"

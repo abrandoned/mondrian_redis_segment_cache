@@ -108,7 +108,7 @@ module MondrianRedisSegmentCache
 
       mondrian_redis.with do |connection|
         connection.sscan_each(SEGMENT_HEADERS_SET_KEY) do |segment_header_base64|
-          unless connection.exists(segment_header_base64)
+          unless connection.exists?(segment_header_base64)
             connection.srem(SEGMENT_HEADERS_SET_KEY, segment_header_base64)
             next
           end
